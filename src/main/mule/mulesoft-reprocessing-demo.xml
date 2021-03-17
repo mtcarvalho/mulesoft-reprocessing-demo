@@ -1,0 +1,187 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:vm="http://www.mulesoft.org/schema/mule/vm"
+	xmlns:validation="http://www.mulesoft.org/schema/mule/validation"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+http://www.mulesoft.org/schema/mule/validation http://www.mulesoft.org/schema/mule/validation/current/mule-validation.xsd
+http://www.mulesoft.org/schema/mule/vm http://www.mulesoft.org/schema/mule/vm/current/mule-vm.xsd">
+	<http:listener-config name="HTTP_Listener_config"
+		doc:name="HTTP Listener config"
+		doc:id="1fee08f2-8bdc-4ff6-b030-e2f5e75055a2">
+		<http:listener-connection host="0.0.0.0"
+			port="8081" />
+	</http:listener-config>
+	<vm:config name="VM_Config" doc:name="VM Config"
+		doc:id="0bd2b321-0d3f-46dd-b729-a8fd561f8ad4">
+		<vm:connection>
+			<reconnection />
+		</vm:connection>
+		<vm:queues>
+			<vm:queue queueName="waitQueue" queueType="PERSISTENT" />
+			<vm:queue queueName="retryQueue"
+				queueType="PERSISTENT" />
+		</vm:queues>
+	</vm:config>
+	<flow name="mainFlow"
+		doc:id="b9fffff4-7c87-4cac-9d30-fab95d31d4ce">
+		<http:listener doc:name="Listener"
+			doc:id="8d5cd4d2-715e-4863-9a3a-a755ca50a9a2"
+			config-ref="HTTP_Listener_config" path="/reprocessing" />
+		<logger level="INFO" doc:name='Point mainFlow'
+			doc:id="cf1f07ab-f014-4503-b1c4-e7c16beaead0"
+			message='#[%dw 2.0
+output application/json
+---
+{ location: "Point mainFlow", timeStamp: now() as String, payload: payload }]' />
+		<ee:transform doc:name="Transform Message"
+			doc:id="27da9e1d-9f79-45e1-a661-268aeda72f46">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	originalPayload: 
+		if ( isEmpty(payload.originalPayload) ) payload 
+		else payload.originalPayload,
+	retryCount: 
+		if ( isEmpty(payload.retryCount) ) 0 
+		else payload.retryCount as Number + 1
+}]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<try doc:name="Try" doc:id="5082f041-1c52-46e5-b8a6-9937740b7dfb">
+			<validation:is-null doc:name="Is null"
+				doc:id="56f9cd3c-a898-4673-bc9b-10749bac4b95" value="#[payload]" />
+			<error-handler>
+				<on-error-continue enableNotifications="false"
+					logException="false" doc:name="On Error Continue"
+					doc:id="fb30b8b4-122e-4853-b875-9ae402c6a24c">
+					<vm:publish queueName="waitQueue"
+						doc:name="Publish to waitQueue"
+						doc:id="f2357dae-5698-4e20-8c32-32455df901d3"
+						config-ref="VM_Config" timeout="50" timeoutUnit="MILLISECONDS" />
+				</on-error-continue>
+			</error-handler>
+		</try>
+	</flow>
+	<flow name="processWaitQueueFlow"
+		doc:id="75dda5d9-cf22-42ac-b731-99d4a32ac001">
+		<scheduler doc:name="Scheduler"
+			doc:id="5b85d3d1-4f32-4824-9caf-ef629bf2be4b">
+			<scheduling-strategy>
+				<fixed-frequency frequency="30000"
+					startDelay="15000" />
+			</scheduling-strategy>
+		</scheduler>
+		<logger level="INFO" doc:name="Point processWaitQueue"
+			doc:id="08703aab-9f82-4aff-8f6b-d20efab170a6"
+			message='#["\n\nPoint processWaitQueue: " ++ now() as String ++ "\n\n"]' />
+		<ee:transform doc:name="Transform Message"
+			doc:id="3de4100e-b2ec-4108-aaaf-9a8527dde158">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+fun prepareList(list:Array, maxSize: Number) = if(sizeOf(list) >= maxSize)
+list
+else
+prepareList(list ++ [(sizeOf(list) + 1) as Number],maxSize)
+---
+prepareList([],100)]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<parallel-foreach doc:name="Parallel For Each"
+			doc:id="0e5572d6-2b0b-4e48-90cd-153fa529be8d" collection="#[payload]">
+			<try doc:name="Try" doc:id="0159582c-ef84-4fde-bf37-ec91faa45d75">
+				<vm:consume queueName="waitQueue"
+					doc:name="Consume from waitQueue"
+					doc:id="0fc0fde2-38a8-4857-9cd5-0098188e6b9b"
+					config-ref="VM_Config" timeout="50" timeoutUnit="MILLISECONDS" transactionalAction="NOT_SUPPORTED"/>
+				<choice doc:name="Choice"
+					doc:id="298344c8-9a12-461c-8101-bb6f2fd76c96">
+					<when
+						expression="#[(isEmpty(payload.retryCount)) or (payload.retryCount &lt; 6)]">
+						<async doc:name="Async"
+							doc:id="862c4fe9-d6ef-44a7-8f7f-285aa8df62d8">
+							<logger level="INFO" doc:name="Point waitQueue processing"
+								doc:id="38543afe-751b-4480-9aff-db6b36641c29"
+								message='#[%dw 2.0
+output application/json
+---
+{ location: "Point waitQueue Processing", timeStamp: now() as String, payload: payload }]' />
+							<vm:publish queueName="retryQueue"
+								doc:name="Publish to retryQueue"
+								doc:id="ecb44154-ff51-4cfb-a506-e3a64b300e54"
+								config-ref="VM_Config" timeoutUnit="MILLISECONDS" timeout="50" />
+						</async>
+					</when>
+					<otherwise>
+						<logger level="INFO" doc:name="Retries expired"
+							doc:id="bb9f574d-573b-4bd2-b619-7bf43f0ea724"
+							message='#[%dw 2.0
+output application/json
+---
+{ location: "Retries Expired", timeStamp: now() as String, payload: payload }]' />
+					</otherwise>
+				</choice>
+				<error-handler>
+					<on-error-continue enableNotifications="false"
+						logException="false" doc:name="On Error Continue"
+						doc:id="bffe4e1f-2d47-47e3-8edd-df909ca3b275"
+						type="VM:EMPTY_QUEUE" />
+				</error-handler>
+			</try>
+		</parallel-foreach>
+	</flow>
+	<flow name="processRetryQueueFlow"
+		doc:id="558049be-c3c8-4311-a6f6-2ef79a086ad8">
+		<scheduler doc:name="Scheduler"
+			doc:id="f1e8564a-fbb9-43c7-b7e5-16545b90a484">
+			<scheduling-strategy>
+				<fixed-frequency frequency="30000"
+					startDelay="30000" />
+			</scheduling-strategy>
+		</scheduler>
+		<logger level="INFO"
+			doc:name="Point processRetryQueueFlow"
+			doc:id="fcf48330-4d8b-4e57-8fc0-9176ddc98110"
+			message='#["\n\nPoint processRetryQueueFlow: " ++ now() as String ++ "\n\n"]' />
+		<ee:transform doc:name="Transform Message"
+			doc:id="6b82ee27-901e-4e3a-b8f7-a1ff984e3898">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+fun prepareList(list:Array, maxSize: Number) = if(sizeOf(list) >= maxSize)
+list
+else
+prepareList(list ++ [(sizeOf(list) + 1) as Number],maxSize)
+---
+prepareList([],100)]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<parallel-foreach doc:name="Parallel For Each"
+			doc:id="deef741e-d3df-46cc-aba0-3fcc87cc3543" collection="#[payload]">
+			<try doc:name="Try" doc:id="90688269-959b-4434-9b11-3115f0ce83d7">
+				<vm:consume queueName="retryQueue"
+					doc:name="Consume from retryQueue"
+					doc:id="07433cfd-cee6-4652-9c3f-0fd68f0e5482"
+					config-ref="VM_Config" timeout="50" timeoutUnit="MILLISECONDS" transactionalAction="NOT_SUPPORTED"/>
+				<logger level="INFO"
+					doc:name="Point processing retryQueue"
+					doc:id="1e6c8c05-5a82-4da1-be05-e4414bcf53e2"
+					message='#[%dw 2.0&#10;output application/json&#10;---&#10;{ location: "Point processing retryQueue", timeStamp: now() as String, payload: payload }]' />
+				<flow-ref doc:name="mainFlow"
+					doc:id="e9ae69e4-45fe-4725-93a8-920aff69b2a1" name="mainFlow" />
+				<error-handler >
+					<on-error-continue enableNotifications="false" logException="false" doc:name="On Error Continue" doc:id="3fa7cd06-e859-4dcc-8c9e-3a90b1260bd0" type="VM:EMPTY_QUEUE" />
+				</error-handler>
+			</try>
+		</parallel-foreach>
+	</flow>
+</mule>
