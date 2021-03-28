@@ -43,7 +43,9 @@ output application/json
 		<ee:transform doc:name="Transform Message"
 			doc:id="27da9e1d-9f79-45e1-a661-268aeda72f46">
 			<ee:message>
-				<ee:set-payload><![CDATA[%dw 2.0
+			</ee:message>
+			<ee:variables >
+				<ee:set-variable variableName="inboundMessagePayload" ><![CDATA[%dw 2.0
 output application/json
 ---
 {
@@ -53,8 +55,8 @@ output application/json
 	retryCount: 
 		if ( isEmpty(payload.retryCount) ) 0 
 		else payload.retryCount as Number + 1
-}]]></ee:set-payload>
-			</ee:message>
+}]]></ee:set-variable>
+			</ee:variables>
 		</ee:transform>
 		<try doc:name="Try" doc:id="5082f041-1c52-46e5-b8a6-9937740b7dfb">
 			<validation:is-null doc:name="Is null"
@@ -66,7 +68,9 @@ output application/json
 					<vm:publish queueName="waitQueue"
 						doc:name="Publish to waitQueue"
 						doc:id="f2357dae-5698-4e20-8c32-32455df901d3"
-						config-ref="VM_Config" timeout="50" timeoutUnit="MILLISECONDS" />
+						config-ref="VM_Config" timeout="50" timeoutUnit="MILLISECONDS" >
+						<vm:content ><![CDATA[#[vars.inboundMessagePayload]]]></vm:content>
+					</vm:publish>
 				</on-error-continue>
 			</error-handler>
 		</try>
@@ -88,12 +92,8 @@ output application/json
 			<ee:message>
 				<ee:set-payload><![CDATA[%dw 2.0
 output application/json
-fun prepareList(list:Array, maxSize: Number) = if(sizeOf(list) >= maxSize)
-list
-else
-prepareList(list ++ [(sizeOf(list) + 1) as Number],maxSize)
 ---
-prepareList([],100)]]></ee:set-payload>
+1 to 100]]></ee:set-payload>
 			</ee:message>
 		</ee:transform>
 		<parallel-foreach doc:name="Parallel For Each"
@@ -106,7 +106,7 @@ prepareList([],100)]]></ee:set-payload>
 				<choice doc:name="Choice"
 					doc:id="298344c8-9a12-461c-8101-bb6f2fd76c96">
 					<when
-						expression="#[(isEmpty(payload.retryCount)) or (payload.retryCount &lt; 6)]">
+						expression="#[(payload.retryCount &lt; 6)]">
 						<async doc:name="Async"
 							doc:id="862c4fe9-d6ef-44a7-8f7f-285aa8df62d8">
 							<logger level="INFO" doc:name="Point waitQueue processing"
@@ -157,12 +157,8 @@ output application/json
 			<ee:message>
 				<ee:set-payload><![CDATA[%dw 2.0
 output application/json
-fun prepareList(list:Array, maxSize: Number) = if(sizeOf(list) >= maxSize)
-list
-else
-prepareList(list ++ [(sizeOf(list) + 1) as Number],maxSize)
 ---
-prepareList([],100)]]></ee:set-payload>
+1 to 100]]></ee:set-payload>
 			</ee:message>
 		</ee:transform>
 		<parallel-foreach doc:name="Parallel For Each"
